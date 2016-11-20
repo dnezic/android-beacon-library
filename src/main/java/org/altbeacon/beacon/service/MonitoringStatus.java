@@ -100,6 +100,9 @@ public class MonitoringStatus {
             if (state.markOutsideIfExpired()) {
                 needsMonitoringStateSaving = true;
                 LogManager.d(TAG, "found a monitor that expired: %s", region);
+                if(region.delayedStart == 1) {
+                    region.thresholdCounter = 0;
+                }
                 state.getCallback().call(mContext, "monitoringData", new MonitoringData(state.getInside(), region));
             }
         }
@@ -114,8 +117,41 @@ public class MonitoringStatus {
     public synchronized void updateNewlyInsideInRegionsContaining(Beacon beacon) {
         List<Region> matchingRegions = regionsMatchingTo(beacon);
         boolean needsMonitoringStateSaving = false;
+
+        for(Region region : matchingRegions) {
+            LogManager.i(TAG, "Checking for slow start region ...");
+            LogManager.i(TAG, "Region is: " + region.delayedStart + " " + region.getUniqueId() + ", threshold: " + region.threshold);
+            RegionMonitoringState state = getRegionsStateMap().get(region);
+            /* slow start */
+            if(state != null && state.getInside() == false && region.delayedStart == 1 && region.firstSeen == 0L) {
+                /* first seen */
+                region.firstSeen = System.currentTimeMillis();
+                matchingRegions.remove(region);
+                LogManager.i(TAG, "Region is first seen.");
+            } else if(state != null && state.getInside() == false && region.delayedStart == 1 && region.firstSeen > 0L) {
+                if(System.currentTimeMillis() - region.firstSeen > region.slowStart) {
+                    region.firstSeen = 0L;
+                    if(region.thresholdCounter > region.threshold) {
+                        LogManager.i(TAG, "Slow start elapsed for region: " + region.getUniqueId());
+                    } else {
+                        LogManager.i(TAG, "Not enough threshold value: " + region.thresholdCounter);
+                        matchingRegions.remove(region);
+                    }
+                    region.thresholdCounter = 0;
+
+
+                } else {
+                    matchingRegions.remove(region);
+                    region.thresholdCounter ++;
+                    LogManager.i(TAG, "Not long enough in region: " + (System.currentTimeMillis() - region.firstSeen + ", Threshold: " + region.thresholdCounter + "/" + region.threshold));
+                }
+            }
+        }
+
         for(Region region : matchingRegions) {
             RegionMonitoringState state = getRegionsStateMap().get(region);
+
+
             if (state != null && state.markInside()) {
                 needsMonitoringStateSaving = true;
                 state.getCallback().call(mContext, "monitoringData",

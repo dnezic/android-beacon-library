@@ -68,6 +68,11 @@ public class Region implements Parcelable, Serializable {
     protected final List<Identifier> mIdentifiers;
     protected final String mBluetoothAddress;
     protected final String mUniqueId;
+    public Integer delayedStart = 0;
+    public Long slowStart = 60000L;
+    public Long firstSeen = 0L;
+    public Integer threshold = 5;
+    public Integer thresholdCounter = 0;
 
     /**
      * Constructs a new Region object to be used for Ranging or Monitoring
@@ -262,6 +267,10 @@ public class Region implements Parcelable, Serializable {
         out.writeString(mUniqueId);
         out.writeString(mBluetoothAddress);
         out.writeInt(mIdentifiers.size());
+        out.writeLong(slowStart);
+        out.writeLong(firstSeen);
+        out.writeInt(delayedStart);
+        out.writeInt(threshold);
 
         for (Identifier identifier: mIdentifiers) {
             if (identifier != null) {
@@ -279,6 +288,10 @@ public class Region implements Parcelable, Serializable {
         mBluetoothAddress = in.readString();
         int size = in.readInt();
         mIdentifiers = new ArrayList<Identifier>(size);
+        slowStart = in.readLong();
+        firstSeen = in.readLong();
+        delayedStart = in.readInt();
+        threshold = in.readInt();
         for (int i = 0; i < size; i++) {
             String identifierString = in.readString();
             if (identifierString == null) {

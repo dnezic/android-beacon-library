@@ -10,7 +10,6 @@ import android.bluetooth.BluetoothManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -26,34 +25,28 @@ import java.util.Date;
 @TargetApi(18)
 public abstract class CycledLeScanner {
     private static final String TAG = "CycledLeScanner";
-    private BluetoothAdapter mBluetoothAdapter;
-
-    private long mLastScanCycleStartTime = 0l;
-    private long mLastScanCycleEndTime = 0l;
-    protected long mNextScanCycleStartTime = 0l;
-    private long mScanCycleStopTime = 0l;
-    private long mLastScanStopTime = 0l;
-
-    private boolean mScanning;
-    protected boolean mScanningPaused;
-    private boolean mScanCyclerStarted = false;
-    private boolean mScanningEnabled = false;
+    private static final long ANDROID_N_MIN_SCAN_CYCLE_MILLIS = 6000l;
     protected final Context mContext;
-    private long mScanPeriod;
-
-    protected long mBetweenScanPeriod;
-
     protected final Handler mHandler = new Handler(Looper.getMainLooper());
     protected final Handler mScanHandler;
-    private final HandlerThread mScanThread;
-
     protected final BluetoothCrashResolver mBluetoothCrashResolver;
     protected final CycledLeScanCallback mCycledLeScanCallback;
-
+    private final HandlerThread mScanThread;
+    protected long mNextScanCycleStartTime = 0l;
+    protected boolean mScanningPaused;
+    protected long mBetweenScanPeriod;
     protected boolean mBackgroundFlag = false;
     protected boolean mRestartNeeded = false;
-
-    private static final long ANDROID_N_MIN_SCAN_CYCLE_MILLIS = 6000l;
+    private BluetoothAdapter mBluetoothAdapter;
+    private long mLastScanCycleStartTime = 0l;
+    private long mLastScanCycleEndTime = 0l;
+    private long mScanCycleStopTime = 0l;
+    private long mLastScanStopTime = 0l;
+    private boolean mScanning;
+    private boolean mScanCyclerStarted = false;
+    private boolean mScanningEnabled = false;
+    private long mScanPeriod;
+    private PendingIntent mWakeUpOperation = null;
 
     protected CycledLeScanner(Context context, long scanPeriod, long betweenScanPeriod, boolean backgroundFlag, CycledLeScanCallback cycledLeScanCallback, BluetoothCrashResolver crashResolver) {
         mScanPeriod = scanPeriod;
@@ -100,11 +93,11 @@ public abstract class CycledLeScanner {
      * Tells the cycler the scan rate and whether it is in operating in background mode.
      * Background mode flag  is used only with the Android 5.0 scanning implementations to switch
      * between LOW_POWER_MODE vs. LOW_LATENCY_MODE
+     *
      * @param backgroundFlag
      */
     public void setScanPeriods(long scanPeriod, long betweenScanPeriod, boolean backgroundFlag) {
-        LogManager.d(TAG, "Set scan periods called with %s, %s Background mode must have changed.",
-                scanPeriod, betweenScanPeriod);
+        LogManager.d(TAG, "Set scan periods called with %s, %s Background mode must have changed.", scanPeriod, betweenScanPeriod);
         if (mBackgroundFlag != backgroundFlag) {
             mRestartNeeded = true;
         }
@@ -126,8 +119,7 @@ public abstract class CycledLeScanner {
             long proposedNextScanStartTime = (mLastScanCycleEndTime + betweenScanPeriod);
             if (proposedNextScanStartTime < mNextScanCycleStartTime) {
                 mNextScanCycleStartTime = proposedNextScanStartTime;
-                LogManager.i(TAG, "Adjusted nextScanStartTime to be %s",
-                        new Date(mNextScanCycleStartTime - SystemClock.elapsedRealtime() + System.currentTimeMillis()));
+                LogManager.i(TAG, "Adjusted nextScanStartTime to be %s", new Date(mNextScanCycleStartTime - SystemClock.elapsedRealtime() + System.currentTimeMillis()));
             }
         }
         if (mScanCycleStopTime > now) {
@@ -236,8 +228,7 @@ public abstract class CycledLeScanner {
                 stopScan();
                 mLastScanCycleEndTime = SystemClock.elapsedRealtime();
             }
-        }
-        catch (SecurityException e) {
+        } catch (SecurityException e) {
             LogManager.w(TAG, "SecurityException working accessing bluetooth.");
         }
     }
@@ -246,8 +237,7 @@ public abstract class CycledLeScanner {
         // Stops scanning after a pre-defined scan period.
         long millisecondsUntilStop = mScanCycleStopTime - SystemClock.elapsedRealtime();
         if (millisecondsUntilStop > 0) {
-            LogManager.d(TAG, "Waiting to stop scan cycle for another %s milliseconds",
-                    millisecondsUntilStop);
+            LogManager.d(TAG, "Waiting to stop scan cycle for another %s milliseconds", millisecondsUntilStop);
             if (mBackgroundFlag) {
                 setWakeUpAlarm();
             }
@@ -272,26 +262,15 @@ public abstract class CycledLeScanner {
                 if (getBluetoothAdapter() != null) {
                     if (getBluetoothAdapter().isEnabled()) {
                         long now = System.currentTimeMillis();
-                        if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
-                                mBetweenScanPeriod+mScanPeriod < ANDROID_N_MIN_SCAN_CYCLE_MILLIS &&
-                                now-mLastScanStopTime < ANDROID_N_MIN_SCAN_CYCLE_MILLIS) {
-                            // As of Android N, only 5 scans may be started in a 30 second period (6
-                            // seconds per cycle)  otherwise they are blocked.  So we check here to see
-                            // if the scan period is 6 seconds or less, and if we last stopped scanning
-                            // fewer than 6 seconds ag and if so, we simply do not stop scanning
-                            LogManager.d(TAG, "Not stopping scan because this is Android N and we" +
-                                    " keep scanning for a minimum of 6 seconds at a time. "+
-                                    "We will stop in "+(ANDROID_N_MIN_SCAN_CYCLE_MILLIS-(now-mLastScanStopTime))+" millisconds.");
+
+                        try {
+                            LogManager.d(TAG, "stopping bluetooth le scan");
+                            finishScan();
+                            mLastScanStopTime = now;
+                        } catch (Exception e) {
+                            LogManager.w(e, TAG, "Internal Android exception scanning for beacons");
                         }
-                        else {
-                            try {
-                                LogManager.d(TAG, "stopping bluetooth le scan");
-                                finishScan();
-                                mLastScanStopTime = now;
-                            } catch (Exception e) {
-                                LogManager.w(e, TAG, "Internal Android exception scanning for beacons");
-                            }
-                        }
+
 
                         mLastScanCycleEndTime = SystemClock.elapsedRealtime();
                     } else {
@@ -308,8 +287,7 @@ public abstract class CycledLeScanner {
                 mScanCyclerStarted = false;
                 cancelWakeUpAlarm();
             }
-        }
-        catch (SecurityException e) {
+        } catch (SecurityException e) {
             LogManager.w(TAG, "SecurityException working accessing bluetooth.");
         }
     }
@@ -318,23 +296,18 @@ public abstract class CycledLeScanner {
         try {
             if (mBluetoothAdapter == null) {
                 // Initializes Bluetooth adapter.
-                final BluetoothManager bluetoothManager =
-                        (BluetoothManager) mContext.getApplicationContext().getSystemService(Context.BLUETOOTH_SERVICE);
+                final BluetoothManager bluetoothManager = (BluetoothManager) mContext.getApplicationContext().getSystemService(Context.BLUETOOTH_SERVICE);
                 mBluetoothAdapter = bluetoothManager.getAdapter();
                 if (mBluetoothAdapter == null) {
                     LogManager.w(TAG, "Failed to construct a BluetoothAdapter");
                 }
             }
-        }
-        catch (SecurityException e) {
+        } catch (SecurityException e) {
             // Thrown by Samsung Knox devices if bluetooth access denied for an app
             LogManager.e(TAG, "Cannot consruct bluetooth adapter.  Security Exception");
         }
         return mBluetoothAdapter;
     }
-
-
-    private PendingIntent mWakeUpOperation = null;
 
     // In case we go into deep sleep, we will set up a wakeup alarm when in the background to kickoff
     // off the scan cycle again
@@ -387,11 +360,10 @@ public abstract class CycledLeScanner {
             return SystemClock.elapsedRealtime();
         }
         long fullScanCycle = mScanPeriod + mBetweenScanPeriod;
-        long normalizedBetweenScanPeriod = mBetweenScanPeriod-(SystemClock.elapsedRealtime() % fullScanCycle);
-        LogManager.d(TAG, "Normalizing between scan period from %s to %s", mBetweenScanPeriod,
-                normalizedBetweenScanPeriod);
+        long normalizedBetweenScanPeriod = mBetweenScanPeriod - (SystemClock.elapsedRealtime() % fullScanCycle);
+        LogManager.d(TAG, "Normalizing between scan period from %s to %s", mBetweenScanPeriod, normalizedBetweenScanPeriod);
 
-        return SystemClock.elapsedRealtime()+normalizedBetweenScanPeriod;
+        return SystemClock.elapsedRealtime() + normalizedBetweenScanPeriod;
     }
 
     private boolean checkLocationPermission() {
